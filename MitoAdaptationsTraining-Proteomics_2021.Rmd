@@ -1,0 +1,441 @@
+---
+title: "Exerciseomics"
+author: "Nikeisha Caruana"
+date: "02/07/2019"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+pacman::p_load("tidyverse","dplyr","stringr","limma", "gplots", "ggplot2","ComplexHeatmap","dendextend", "imputeLCMD","vsn", "circlize", "impute")
+```
+
+```{r upload data, cleanup and annotation}
+mq_data <- read_tsv("data/VU_muscle_proteinGroups.txt", na = "0", guess_max = 100000)[c(2,6,7,262:301)]
+anno_IMPI <- read_tsv("data/nikeishaIMPI.txt", col_names = TRUE)[c(1,3,8)]
+anno_mito <- read_csv("data/Human.MitoCarta2.0_202011.csv", na="0", guess_max = 100000)
+anno_mitocartIMPI <- merge(anno_mito, anno_IMPI, by.x = "Symbol", by.y="Gene.added", all = TRUE)
+mq_data <- mq_data %>% separate(col = `Gene names`, into = c("Gene names"), sep = ";")
+
+#remove contaminates and filter
+rmcrp <- mq_data %>% filter(!grepl("CON",mq_data$`Majority protein IDs`)) %>% filter(!grepl("REV",`Majority protein IDs`))
+filtered_data <- rmcrp[-which(rowMeans(is.na(rmcrp)) > 0.30),]
+
+anno_data <- merge(anno_mitocartIMPI, filtered_data, by.x="Symbol", by.y="Gene names", all.y=TRUE)
+colnames(anno_data) <- make.names(names(anno_data))
+```
+
+#Mitochondrial Proteins
+```{r}
+#filter mitochondrial proteins using IMPI
+mito_things <- filter(anno_data, Gene.mitoEvidenceIMPI == "Known mitochondrial")
+mito_things <- mito_things %>% dplyr::select(Symbol,Majority.protein.IDs,contains("LFQ"), CI, CII,CIII,CIV, CV, mtRibo)
+```
+
+```{r}
+#annotation of complexes
+mito_lfq_data <- mito_things %>% dplyr::select(Symbol, CI, CII,CIII,CIV,CV,mtRibo,contains("LFQ"))
+colnames(mito_lfq_data)
+
+mito_long_lfq_data <- mito_lfq_data %>% gather("sample","intensity", -Symbol,-CI, -CII,-CIII,-CIV,-CV, -mtRibo)
+
+mito_biorep_names <- str_match(mito_long_lfq_data$sample,"[0-9]+[A-Z]..[0-9]_[A-Z]")[,1]
+mito_biorep_names <- str_replace(mito_biorep_names, ".1_", "_BL_")
+mito_biorep_names <- str_replace(mito_biorep_names, ".2_", "_NTV_")
+mito_biorep_names <- str_replace(mito_biorep_names, ".5_", "_HTV_")
+mito_biorep_names <- str_replace(mito_biorep_names, ".8_", "_RTV_")
+
+mito_long_lfq_data$sample <- mito_biorep_names
+
+mito_bioav_lfq_data <- mito_long_lfq_data %>% 
+  group_by(sample)
+
+mito_bioav_wide_lfq_data <- mito_bioav_lfq_data %>% spread(sample,intensity)
+```
+
+```{r}
+mito_info_data <- mito_bioav_lfq_data %>% dplyr::select(sample) 
+mito_expr_data_raw <- mito_bioav_wide_lfq_data %>% ungroup() %>% dplyr::select((8:47))
+mito_expr_data_raw[is.na(mito_expr_data_raw)] <- NA
+mito_expr_data <- normalizeVSN(mito_expr_data_raw)
+```
+
+```{r}
+mito_labels <- mito_bioav_wide_lfq_data[c(1:7)]
+#mito_labels$Symbol <- gsub("(.+?)(\\;.*)", "\\1", mito_labels$Symbol)
+mito_labels <- as.data.frame(mito_labels)
+
+#IMPUTATION
+mito_imputed <- impute.QRILC((mito_expr_data))
+mito_imputed <- mito_imputed[[1]]
+mito_imputedall <- cbind(mito_imputed, mito_labels)
+row.names(mito_imputedall) <- mito_labels$Symbol
+
+mito_long_imputedall <- mito_imputedall %>% gather("sample","intensity", -Symbol,-CI, -CII,-CIII,-CIV, -CV, -mtRibo)
+mito_wide_imputedall <- mito_long_imputedall %>% spread(sample,intensity)
+#design
+mito_anno_samples <- str_match(colnames(mito_imputedall), pattern = "([0-9]*[A-Z]*)_([A-Z]*)_([A-Z])")[,2:4]
+colnames(mito_anno_samples) <- c("Subject","TrainingVolume","Batch")
+mito_anno_samples <- na.omit(mito_anno_samples)
+mito_anno_samples <- as.data.frame(mito_anno_samples)
+
+col.day <- c("blue","red","dark green", "purple")[mito_anno_samples$TrainingVolume]
+col.subject <- c("blue","red","dark green","purple","orange","magenta","black","light blue", "green", "brown")[mito_anno_samples$Subject]
+```
+
+MDS plot
+```{r}
+#check mds
+mito_anno_samples <- str_match(colnames(mito_imputedall), pattern = "([0-9]*[A-Z]*)_([A-Z]*)_([A-Z])")[,1:4]
+mito_anno_samples <- na.omit(mito_anno_samples)
+mito_anno_samples <- as.data.frame(mito_anno_samples)
+colnames(mito_anno_samples) <- c("sample","Subject","TrainingVolume","Batch")
+rownames(mito_anno_samples) <- mito_anno_samples$sample
+
+batch <- mito_anno_samples$Subject
+removedbatch <- removeBatchEffect(mito_expr_data_raw, batch = batch)
+
+#check mds
+mds_data <- plotMDS(removedbatch, plot = TRUE)
+mds_data <- data.frame(x=mds_data$x,y=mds_data$y,mito_anno_samples[names(mds_data$x),])
+p <- ggplot(mds_data,aes(x=x,y=y)) + geom_point(aes(color = TrainingVolume), size=6)
+p
+
+# ggsave(
+#   "prot_mds.pdf",
+#   p,
+#   width = 10,
+#   height = 9,
+#   dpi = 300,
+#   useDingbats=FALSE
+# )
+```
+
+```{r}
+mito_long_imputedall <- mito_wide_imputedall %>% gather("sample","intensity",-Symbol,-CI, -CII,-CIII,-CIV,-CV, -mtRibo)
+mito_long_imputedall <- mito_long_imputedall %>% separate(sample, c("subject", "trainingvolume", "batch"))
+
+mito_subject_zscore <- mito_long_imputedall %>% group_by(subject,Symbol) %>% mutate(zscore_intensity = scale(intensity)) %>% dplyr::select(-c(11))
+#mito_subject_zscore <- mito_subject_zscore %>% unite("sample", subject, trainingvolume, batch)
+
+#PROFILE PLOTS
+#mito_subject_zscore_profile <- mito_subject_zscore %>% separate(sample, c("subject", "trainingvolume", "batch"))
+#mito_subject_zscore_profile <- mito_subject_zscore_profile  %>% group_by(trainingvolume,Symbol)
+mito_subject_zscore$trainingvolume <- factor(mito_subject_zscore$trainingvolume, c("BL", "NTV","HTV","RTV"))
+
+#pdf("profileplot_mitosall.pdf", height = 15, width = 20)
+ggplot(mito_subject_zscore, aes(trainingvolume,zscore_intensity,group=Symbol)) + geom_smooth(se =FALSE, colour = "#2D205C") + theme_bw() + theme(text = element_text(size=20))
+#dev.off()
+```
+
+```{r}
+#complexes
+mito_subject_zscore[mito_subject_zscore==""] <- NA
+mito_subject_zscore$CI <- gsub("+", "CI", mito_subject_zscore$CI, fixed = TRUE)
+mito_subject_zscore$CII <- gsub("+", "CII", mito_subject_zscore$CII, fixed = TRUE)
+mito_subject_zscore$CIII <- gsub("+", "CIII", mito_subject_zscore$CIII, fixed = TRUE)
+mito_subject_zscore$CIV <- gsub("+", "CIV", mito_subject_zscore$CIV, fixed = TRUE)
+mito_subject_zscore$CV <- gsub("+", "CV", mito_subject_zscore$CV, fixed = TRUE)
+mito_subject_zscore$mtRibo <- gsub("+", "mtribo", mito_subject_zscore$mtRibo, fixed = TRUE)
+
+mito_subject_zscore <- mito_subject_zscore %>% mutate(complex = coalesce(CI,CII,CIII,CIV,CV,mtRibo)) 
+
+#background of all things
+bg <- mito_subject_zscore %>% select(-complex)
+
+#pdf("profile_nonnormcomplex_long.pdf", height = 25, width = 7)
+mito_subject_zscore %>% drop_na(complex) %>% ggplot(aes(x = trainingvolume, y = zscore_intensity, group = Symbol)) + geom_smooth(data = bg, color = "grey", se = FALSE) + geom_smooth( aes(x = trainingvolume, y = zscore_intensity, colour = complex, group = Symbol), se = FALSE, colour = "turquoise4") + facet_grid(complex ~ .) + theme_bw() + theme(strip.text = element_text(size=30), strip.text.y = element_text(angle = 0, hjust = 0.5))
+#dev.off()
+```
+
+```{r}
+mito_long_imputedall <- mito_wide_imputedall %>% gather("sample","intensity",-Symbol,-CI, -CII,-CIII,-CIV,-CV, -mtRibo)
+mito_long_imputedall <- mito_long_imputedall %>% separate(sample, c("subject", "trainingvolume", "batch"))
+
+mito_subject_zscore <- mito_long_imputedall %>% group_by(subject, Symbol) %>% mutate(zscore_intensity = scale(intensity)) %>% dplyr::select(-c(11))
+mito_subject_zscore <- mito_subject_zscore %>% unite("sample", subject, trainingvolume, batch)
+```
+
+```{r}
+#everything
+mito_zscore_subject_wide <- mito_subject_zscore %>% spread(sample,zscore_intensity)
+rownames <- mito_zscore_subject_wide$Symbol
+mito_zscore_info <- mito_zscore_subject_wide[c(1:7)]
+mito_zscore_subject_wide <- mito_zscore_subject_wide[-c(1:7)]
+rownames(mito_zscore_subject_wide) <- rownames
+#clustering
+#rownames(mito_score_2_wide) <- mito_zscoreinfo$Symbol
+structure <- dist((mito_zscore_subject_wide), method = "euclidean")
+hc <- hclust(structure, method = "average")
+dend <- as.dendrogram(hc)
+mito_hc = color_branches(dend, k = 4)
+mito_anno_samples_trainvol <- mito_anno_samples[c(2)]
+
+mito_colours <- list(TrainingVolume=c("BL"="red2","NTV"="royalblue", "HTV"="limegreen", "RTV"="gold"))
+mito_colAnn <- HeatmapAnnotation(df=mito_anno_samples_trainvol, which="col", col=mito_colours, annotation_width=unit(c(1, 4), "cm"), gap=unit(1, "mm"))
+
+dendrow <- mito_zscore_subject_wide %>% dist(method = "euclidean") %>% hclust(method = "average") %>% as.dendrogram %>% color_branches(dend, k = 4)
+dendcol <- t(mito_zscore_subject_wide) %>% dist(method = "euclidean") %>% hclust(method = "average") %>% as.dendrogram %>% color_branches(dend, k = 3)
+
+#pdf("heatmap_mito_groupeddays.pdf", height = 90, width = 15)
+Heatmap(as.matrix(mito_zscore_subject_wide), cluster_rows = mito_hc, cluster_columns = TRUE, row_dend_width = unit(2, "cm"), row_names_gp = gpar(fontsize = 10), bottom_annotation = mito_colAnn)
+#dev.off()
+```
+
+#Differential expression analysis
+```{r}
+design_mito <- model.matrix(~0 + TrainingVolume + Batch, mito_anno_samples)
+colnames(design_mito) <- gsub("TrainingVolume","", colnames(design_mito))
+colnames(design_mito) <-  gsub("sample","", colnames(design_mito))
+rownames(design_mito) <- mito_anno_samples$Subject
+
+contr.matrix_muscle <- makeContrasts(
+    NTVvsBase = NTV-BL,
+    HTVvsBase = HTV-BL,
+    RTVvsBase = RTV-BL,
+    HTVvsNTV = HTV-NTV,
+    RTVvsNTV = RTV-NTV,
+    HTVvsRTV = RTV-HTV,
+    levels = design_mito
+  )
+
+mito_fit <- lmFit(mito_zscore_subject_wide, design_mito)
+cfit <- contrasts.fit(mito_fit, contrasts = contr.matrix_muscle)
+mito_efit<-eBayes(cfit)
+
+mito_comparison1 <- topTable(mito_efit,coef = c(1,4,6), n=Inf, genelist = mito_info_data, adjust.method = "BH")
+mito_comparison2 <- topTable(mito_efit, coef = c(1,4,6), n=Inf, genelist = mito_info_data, adjust.method = "BH")
+mito_comparison2 <- subset(mito_comparison2, mito_comparison2$adj.P.Val<0.01)
+
+subset3 <- rownames(mito_comparison2)
+subset3 <- as.data.frame(subset3)
+mito_zscore_subject_wide$Symbol <- rownames(mito_zscore_subject_wide)
+
+mito_zscore_subject_wide$CI <- mito_zscore_info$CI
+mito_zscore_subject_wide$CII <- mito_zscore_info$CII
+mito_zscore_subject_wide$CIII <- mito_zscore_info$CIII
+mito_zscore_subject_wide$CIV <- mito_zscore_info$CIV
+mito_zscore_subject_wide$CV <- mito_zscore_info$CV
+mito_zscore_subject_wide$mtRibo <- mito_zscore_info$mtRibo
+
+mito_zscore_subject_wide$CI <- gsub("+", "CI", mito_zscore_subject_wide$CI, fixed = TRUE)
+mito_zscore_subject_wide$CII <- gsub("+", "CII", mito_zscore_subject_wide$CII, fixed = TRUE)
+mito_zscore_subject_wide$CIII <- gsub("+", "CIII", mito_zscore_subject_wide$CIII, fixed = TRUE)
+mito_zscore_subject_wide$CIV <- gsub("+", "CIV", mito_zscore_subject_wide$CIV, fixed = TRUE)
+mito_zscore_subject_wide$CV <- gsub("+", "CV", mito_zscore_subject_wide$CV, fixed = TRUE)
+mito_zscore_subject_wide$mtRibo <- gsub("+", "mtribo", mito_zscore_subject_wide$mtRibo, fixed = TRUE)
+
+subset4 <- mito_zscore_subject_wide %>% filter(Symbol %in% subset3$subset3) 
+subset4rownames <- subset4$Symbol
+#subset4 <- subset4 %>% select(-c(41))
+subset4 <- as.data.frame(subset4)
+rownames(subset4) <- subset4rownames
+```
+
+```{r}
+mito_colours <- list(TrainingVolume=c("BL"="slategray3","NTV"="lightskyblue", "HTV"="cornflowerblue", "RTV"="slateblue2"))
+mito_colAnn <- HeatmapAnnotation(df=mito_anno_samples_trainvol, which="col", col=mito_colours, annotation_height=unit(2, "cm"), gap=unit(1, "mm"),simple_anno_size = unit(2, "cm"))
+
+subset4[subset4==""] <- NA
+subset4 <- subset4 %>% mutate(complex = coalesce(CI,CII,CIII,CIV,CV,mtRibo)) 
+
+#mito_anno_samples_complexes <- subset4[c(42:47)]
+mito_colours2 <- list(complex =c("CI"="slategray3","CII"="lightskyblue", "CIII"="cornflowerblue", "CIV"="slateblue2", "CV" = "gold", "mtribo" = "pink"))
+mito_colAnn2 <- HeatmapAnnotation(complex=subset4$complex, which="row", col = list(complex = c("CI"="red","CII"="lightskyblue", "CIII"="cornflowerblue", "CV" = "gold", "mtribo" = "seagreen")), annotation_width=unit(2, "cm"), gap=unit(1, "mm"), simple_anno_size = unit(2, "cm"))
+
+col = colorRamp2(c(-1.5, 0, 1.5), c("lightseagreen", "white", "mediumvioletred"))
+rownames(subset4) <- subset4$Symbol
+
+dendrow <- subset4[c(1:40)] %>% dist(method = "euclidean") %>% hclust(method = "ward.D2") %>% as.dendrogram %>% color_branches(k = 6)
+dendcol <- t(subset4[c(1:40)]) %>% dist(method = "euclidean") %>% hclust(method = "average") %>% as.dendrogram %>% color_branches( k = 3)
+
+hm <- Heatmap(as.matrix(subset4[c(1:40)]), cluster_rows = dendrow, cluster_columns = dendcol, column_dend_height = unit(3, "cm"), row_dend_width = unit(6, "cm"), row_names_gp = gpar(fontsize = 10), bottom_annotation = mito_colAnn, row_names_side = "left", row_dend_side = "right", right_annotation = mito_colAnn2, col = col, rect_gp = gpar(col = "slategray", lwd = 0.1))
+
+
+#pdf("HM_expressionmitos_0220.pdf", height = 50, width = 15)
+hm
+#dev.off()
+```
+
+```{r}
+subset5 <- subset4[c(41:48)]
+mito_comparison2$Symbol <- rownames(mito_comparison2)
+subset6 <- merge(subset5, mito_comparison2, by.x = "Symbol", by.y = "Symbol")
+rownames(subset6) <- subset6$Symbol
+
+mito_colAnn2 <- HeatmapAnnotation(Complex=subset6$complex, which="row", col = list(Complex = c("CI"="#f8766d","CII"="#B79F00", "CIII"="#00BA38", "CV" = "#619CFF", "mtribo" = "#F564E3")), annotation_width=unit(2, "cm"), simple_anno_size = unit(2, "cm"), gap=unit(1, "mm"))
+
+dendrow <- subset6[c(10,11,12)] %>% dist(method = "euclidean") %>% hclust(method = "ward.D") %>% as.dendrogram %>% color_branches(dend, k = 6)
+
+col = colorRamp2(c(-1.5, 0, 1.5), c("#34697c", "white", "deeppink4"))
+
+#pdf("HM_DEmitos_202005.pdf", height =35, width = 10)
+DEHM <- Heatmap(as.matrix(subset6[c(10,11,12)]), row_dend_side = "right",row_names_side = "left", right_annotation = mito_colAnn2, cluster_rows = dendrow, row_dend_width = unit(6, "cm"), row_names_gp = gpar(fontsize = 10), col = col, cluster_columns = FALSE)
+DEHM
+#dev.off()
+```
+
+```{r}
+design_mito <- model.matrix(~0 + TrainingVolume + Batch, mito_anno_samples)
+colnames(design_mito) <- gsub("TrainingVolume","", colnames(design_mito))
+colnames(design_mito) <-  gsub("sample","", colnames(design_mito))
+rownames(design_mito) <- mito_anno_samples$Subject
+
+contr.matrix_muscle <- makeContrasts(
+    NTVvsBase = NTV-BL,
+    HTVvsBase = HTV-BL,
+    RTVvsBase = RTV-BL,
+    HTVvsNTV = HTV-NTV,
+    RTVvsNTV = RTV-NTV,
+    HTVvsRTV = RTV-HTV,
+    levels = design_mito
+  )
+
+mito_fit <- lmFit(mito_zscore_subject_wide, design_mito)
+cfit <- contrasts.fit(mito_fit, contrasts = contr.matrix_muscle)
+mito_efit<-eBayes(cfit)
+
+mito_comparison2 <- topTable(mito_efit, n=Inf, genelist = mito_info_data, adjust.method = "BH")
+mito_comparison2 <- topTable(mito_efit, coef = c(1,4,6), n=Inf, genelist = mito_info_data, adjust.method = "BH")
+mito_comparison2 <- subset(mito_comparison2, mito_comparison2$adj.P.Val<0.01)
+
+subset3 <- rownames(mito_comparison2)
+subset3 <- as.data.frame(subset3)
+mito_zscore_subject_wide$Symbol <- rownames(mito_zscore_subject_wide)
+
+mito_zscore_subject_wide$CI <- mito_zscore_info$CI
+mito_zscore_subject_wide$CII <- mito_zscore_info$CII
+mito_zscore_subject_wide$CIII <- mito_zscore_info$CIII
+mito_zscore_subject_wide$CIV <- mito_zscore_info$CIV
+mito_zscore_subject_wide$CV <- mito_zscore_info$CV
+mito_zscore_subject_wide$mtRibo <- mito_zscore_info$mtRibo
+
+mito_zscore_subject_wide$CI <- gsub("+", "CI", mito_zscore_subject_wide$CI, fixed = TRUE)
+mito_zscore_subject_wide$CII <- gsub("+", "CII", mito_zscore_subject_wide$CII, fixed = TRUE)
+mito_zscore_subject_wide$CIII <- gsub("+", "CIII", mito_zscore_subject_wide$CIII, fixed = TRUE)
+mito_zscore_subject_wide$CIV <- gsub("+", "CIV", mito_zscore_subject_wide$CIV, fixed = TRUE)
+mito_zscore_subject_wide$CV <- gsub("+", "CV", mito_zscore_subject_wide$CV, fixed = TRUE)
+mito_zscore_subject_wide$mtRibo <- gsub("+", "mtribo", mito_zscore_subject_wide$mtRibo, fixed = TRUE)
+
+subset4 <- mito_zscore_subject_wide %>% filter(Symbol %in% subset3$subset3) 
+subset4rownames <- subset4$Symbol
+#subset4 <- subset4 %>% select(-c(41))
+subset4 <- as.data.frame(subset4)
+rownames(subset4) <- subset4rownames
+```
+
+
+#Tables and Supp tables for submission - to generate
+```{r}
+#final tables
+#merge extra category info into ALL mito table
+
+ALL_PROTS <- read.table("data/allprots.txt", sep = "\t", header=TRUE)
+
+#merge categories into all prots
+ALL_PROTS_CATEGORY <- merge(ALL_PROTS, categories, by = "Symbol")
+
+#merge raw expression data 
+ALL_PROTS_CATEGORY_RAW <- merge(ALL_PROTS_CATEGORY, mito_zscore_subject_wide, by = "Symbol" )
+
+#just DE prots
+delistinorder <- read.table("data/delist.csv", sep = ',')
+
+filteredDE <- merge(ALL_PROTS_CATEGORY_RAW, delistinorder, by.x="Symbol", by.y="V1", all.y = TRUE)
+
+delistinorder <- as.factor(delistinorder$V1)
+
+#arrange
+DE_PROTS <- filteredDE %>% arrange(factor(Symbol, levels = delistinorder))
+
+```
+
+```{r}
+
+#Extra comparisons
+contr.matrix_muscle <- makeContrasts(
+    NTVvsBase = NTV-BL,
+    HTVvsBase = HTV-BL,
+    RTVvsBase = RTV-BL,
+    HTVvsNTV = HTV-NTV,
+    RTVvsNTV = RTV-NTV,
+    HTVvsRTV = RTV-HTV,
+    levels = design_mito
+  )
+
+
+extracomps <- topTable(mito_efit, coef = c(1), n=Inf, genelist = mito_info_data, adjust.method = "BH")
+extracomps2 <- subset(extracomps, extracomps$adj.P.Val<0.01)
+extracomps2$names <- rownames(extracomps2)
+write.xlsx(extracomps2, "extracomp_PNBL.xlsx")
+
+extracomps <- topTable(mito_efit, coef = c(4), n=Inf, genelist = mito_info_data, adjust.method = "BH")
+extracomps2 <- subset(extracomps, extracomps$adj.P.Val<0.01)
+extracomps2$names <- rownames(extracomps2)
+write.xlsx(extracomps2, "extracomp_PHPN.xlsx")
+
+extracomps <- topTable(mito_efit, coef = c(6), n=Inf, genelist = mito_info_data, adjust.method = "BH")
+extracomps2 <- subset(extracomps, extracomps$adj.P.Val<0.01)
+extracomps2$names <- rownames(extracomps2)
+write.xlsx(extracomps2, "extracomp_PRPH.xlsx")
+
+extracomps <- topTable(mito_efit, coef = c(3), n=Inf, genelist = mito_info_data, adjust.method = "BH")
+extracomps2 <- subset(extracomps, extracomps$adj.P.Val<0.01)
+extracomps2$names <- rownames(extracomps2)
+write.xlsx(extracomps2, "extracomp_PRBL.xlsx")
+
+extracomps <- topTable(mito_efit, coef = c(2), n=Inf, genelist = mito_info_data, adjust.method = "BH")
+extracomps2 <- subset(extracomps, extracomps$adj.P.Val<0.01)
+extracomps2$names <- rownames(extracomps2)
+write.xlsx(extracomps2, "extracomp_PHBL.xlsx")
+
+extracomps <- topTable(mito_efit, coef = c(2), n=Inf, genelist = mito_info_data, adjust.method = "BH")
+extracomps2 <- subset(extracomps, extracomps$adj.P.Val<0.01)
+extracomps2$names <- rownames(extracomps2)
+write.xlsx(extracomps2, "extracomp_PHBL.xlsx")
+
+extracomps <- topTable(mito_efit, coef = c(5), n=Inf, genelist = mito_info_data, adjust.method = "BH")
+extracomps2 <- subset(extracomps, extracomps$adj.P.Val<0.01)
+extracomps2$names <- rownames(extracomps2)
+write.xlsx(extracomps2, "extracomp_PRPN.xlsx")
+
+```
+
+merge for supp tables
+```{r}
+#EVERYTHING
+#need MQ tables
+mq_data2 <- read_tsv("data/VU_muscle_proteinGroups.txt", na = "0", guess_max = 100000)[c(10:12,133,136,139,140,9,1,2,6,7,262:301)] 
+mq_data2 <- mq_data2 %>% separate(col = `Gene names`, into = c("Gene names"), sep = ";")
+rmcrp2 <- mq_data2 %>% filter(!grepl("CON",mq_data2$`Majority protein IDs`)) %>% filter(!grepl("REV",`Majority protein IDs`))
+filtered_data2 <- rmcrp2[-which(rowMeans(is.na(rmcrp2)) > 0.30),]
+
+anno_data2 <- merge(anno_mitocartIMPI, filtered_data2, by.x="Symbol", by.y="Gene names", all.y=TRUE)
+colnames(anno_data2) <- make.names(names(anno_data2))
+
+anno_data2 <- anno_data2[c(1,2,6,14,16:20,23,27:78)]
+anno_data2[is.na(anno_data2)] <- ""
+
+#need logged data - logged, normed by VSN and imputed
+loggeddata <- anno_data2[c(23:62)]
+loggeddata <- apply(as.matrix.noquote(loggeddata),2,as.numeric)
+loggeddata <- log2(loggeddata)
+#merge
+loggedallprots <- cbind(anno_data2, loggeddata)
+
+#merge new table with old for 1029 prots
+newlist <- read.xlsx("data/loggedannoallprots_20201125.xlsx")
+OGlist <- anno_data[c(1,2,14,28)]
+
+altered <- merge(OGlist, newlist)
+
+justmitosaltered <- altered %>% filter(Gene.mitoEvidenceIMPI == "Known mitochondrial")
+mergedmitos_scaled <- merge(justmitosaltered, mito_zscore_subject_wide, by.x = "Symbol", by.y = "Symbol")
+write.xlsx(mergedmitos_scaled, "MITOS_scaledanno_20201126.xlsx")
+```
+
