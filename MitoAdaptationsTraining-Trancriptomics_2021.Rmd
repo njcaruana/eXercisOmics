@@ -8,7 +8,7 @@ editor_options:
 ---
 
 ```{r setup, include=FALSE}
-pacman::p_load("stringr","gplots","ggplot2","ComplexHeatmap", "limma", "Glimma", "edgeR", "Homo.sapiens", "dplyr", "tidyr", "readr", "circlize", "RColorBrewer", "dendextend")
+pacman::p_load("stringr","gplots","ggplot2","ComplexHeatmap", "limma", "edgeR", "Homo.sapiens", "dplyr", "tidyr", "readr", "circlize", "RColorBrewer", "dendextend")
 ```
 
 ```{r}
@@ -17,7 +17,7 @@ readcounts <- read.delim("data/gene_counts_samplenames.txt", header = TRUE, chec
 #remove GG because outlier?
 readcounts <- readcounts[-c(1,2,3,20)]
 
-IMPI_MitocartaDB_NJCEDIT <- read_csv("data/IMPI_MitocartaDB_NJCEDIT.csv", 
+IMPI_MitocartaDB_NJCEDIT <- read_csv("data/IMPI_Mitocarta.csv", 
     col_types = cols(CI = col_character(), 
         CII = col_character(), CIII = col_character(), 
         CIV = col_character(), CV = col_character(), 
@@ -57,14 +57,6 @@ head(genes)
 genesymbols <- dgelist$genes$SYMBOL
 genes <- genes[!duplicated(genes$ENTREZID),]
 dgelist$genes <- genes
-
-#from total RNA
-# merged <- merge(genes, anno_mitocartIMPI, by.x = "ENTREZID", by.y = "EntrezID", all.x = TRUE)
-# merged[merged==""] <- NA
-# merged$Gene.mitoEvidenceIMPI[is.na(merged$Gene.mitoEvidenceIMPI)] <- "Non mitochondrial"
-# merged <- merged[!duplicated(merged$ENTREZID),]
-# 
-# dgelist$genes <- merged
 ```
 
 Pre-processing
@@ -129,15 +121,13 @@ par(mfrow=c(1,2))
 col.group <- group
 levels(col.group) <-  brewer.pal(nlevels(col.group), "Set1")
 col.group <- as.character(col.group)
-plotMDS(lcpm, labels=group, col=col.group)
+plotMDS(lcpm, labels=group)
 title(main="A. Subjects")
 col.training <- training 
 levels(col.training) <-  brewer.pal(nlevels(col.training), "Set2")
 col.training <- as.character(col.training)
-plotMDS(lcpm, labels=training, col=col.training, dim=c(3,4))
+plotMDS(lcpm, labels=training, dim=c(3,4))
 title(main="B. Training Volumes")
-
-plotMDS(dgelist, labels=TrainingVolume, col=col.concent[anno_RNA$Subject], prior.count=5)
 ```
 
 ```{r}
@@ -162,13 +152,8 @@ contr.matrix
 
 ```{r}
 par(mfrow=c(1,2))
-#v <- voom(dgelist, design, normalize.method = "quantile",  plot=TRUE)
-#cor <- duplicateCorrelation(v, design, block = anno_RNA$Subject)
-#cor$consensus
 
 v <- voom(dgelist, design, plot = TRUE)
-#cor <- duplicateCorrelation(v, design, block = anno_RNA$Subject)
-#cor$consensus
 vfit <- lmFit(v, design)
 vfit <- contrasts.fit(vfit, contrasts=contr.matrix)
 efit <- eBayes(vfit)
@@ -181,10 +166,6 @@ summary(dt)
 ```{r}
 rna_comp<- topTable(efit, c(1,4,6), n=Inf, adjust.method = "BH")
 rna_comp <- subset(rna_comp, rna_comp$adj.P.Val<0.05)
-```
-
-```{r}
-volcanoplot(efit, coef = 1, style = "p-value", highlight = 20, names = efit$genes$SYMBOL, hl.col="blue", xlab = "Log2 Fold Change", ylab = NULL, pch=16, cex=0.35)
 ```
 
 ```{r}
@@ -253,7 +234,7 @@ long_trans_profile <- long_trans_profile %>% separate(sample, c("subject", "trai
 trans_zscore_profile <- long_trans_profile %>% group_by(trainingvolume,subject) 
 trans_zscore_profile$trainingvolume <- factor(trans_zscore_profile$trainingvolume, c("BL", "NTV","HTV","RTV"))
 
-ggplot(data = trans_zscore_profile, aes(x = trainingvolume, y = zscore_counts, colour = Gene.mitoEvidenceIMPI, group = SYMBOL)) + geom_smooth(data = subset(trans_zscore_profile, Gene.mitoEvidenceIMPI == "Known mitochondrial"), se = FALSE) + geom_smooth(data=subset(trans_zscore_profile, mtRibo == "+"), aes(x = trainingvolume, y = zscore_counts, colour = SYMBOL, group = SYMBOL), se = FALSE) 
+ggplot(data = trans_zscore_profile, aes(x = trainingvolume, y = zscore_counts, colour = Gene.mitoEvidenceIMPI, group = SYMBOL)) + geom_smooth(data = subset(trans_zscore_profile, Gene.mitoEvidenceIMPI == "Known mitochondrial"), se = FALSE) 
 ```
 
 Extra Profiles
@@ -265,9 +246,7 @@ zscoreprofiles <- zscoreprofiles %>% group_by(trainingvolume,subject)
 zscoreprofiles$trainingvolume <- factor(zscoreprofiles$trainingvolume, c("BL", "NTV","HTV","RTV"))
 
 
-#pdf("profile_MICOS.pdf", height = 15, width = 20)
 ggplot(data = zscoreprofiles, aes(x = trainingvolume, y = zscore_counts, group = SYMBOL)) + geom_smooth(data = subset(zscoreprofiles, Gene.mitoEvidenceIMPI == "Known mitochondrial"), colour = "#BFBEBE", se = FALSE) + geom_smooth(data=subset(zscoreprofiles, MICOS == "+"), aes(x = trainingvolume, y = zscore_counts,  group = SYMBOL),colour = "#353535", se = FALSE) + theme_bw()
-#dev.off()
 
 ggplot(data = zscoreprofiles, aes(x = trainingvolume, y = zscore_counts, group = SYMBOL)) + geom_smooth(data = subset(zscoreprofiles, Gene.mitoEvidenceIMPI == "Known mitochondrial"), colour = "black", se = FALSE) + geom_smooth(data=subset(zscoreprofiles, TCACycle == "+"), aes(x = trainingvolume, y = zscore_counts, colour = "red", group = SYMBOL), se = FALSE) + ggtitle("TCA cycle")
 

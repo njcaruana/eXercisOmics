@@ -12,14 +12,12 @@ knitr::opts_chunk$set(echo = TRUE)
 
 
 ```{r}
-pacman::p_load("stringr","gplots","ggplot2","ComplexHeatmap", "limma", "Glimma", "edgeR", "Homo.sapiens", "dplyr", "tidyr", "readr", "circlize", "RColorBrewer", "dendextend", "imputeLCMD", "impute")
+pacman::p_load("stringr","gplots","ggplot2","ComplexHeatmap", "limma", "edgeR", "Homo.sapiens", "dplyr", "tidyr", "readr", "circlize", "RColorBrewer", "dendextend", "imputeLCMD", "impute")
 ```
 
 Read in data
 ```{r}
-setwd("~/Dropbox/PostDoc/Projects_Stroud2019/Exercise_Mitos")
 TotalLipids <- read.csv("data/2020_08_12_MP20_007_final_totals.csv")
-#TotalLipids <- read.csv("data/lipidtotalspecies.csv)
 CL <- read.csv("data/2020_04_06_MP20_007_CL_total.csv")
 CL <- na.omit(CL)
 ```
@@ -184,20 +182,6 @@ CLnormed_sp <- CLnormed_sp[!rowSums(is.na(CLnormed_sp)) > ncol(CLnormed_sp)*.3,]
 class(CLnormed_sp) <- "numeric"
 ```
 
-MDS plot CL
-```{r}
-# lipid_logCL <- log2(allCLs)
-# lipid_normCL <- normalizeQuantiles(lipid_logCL)
-# rownames(lipid_normCL) <- sampleanno$`totalsall$sample.type`
-# ```
-# 
-# ```{r}
-# #check mds
-# T_norm <- t(lipid_normCL)
-# mds_data <- plotMDS(T_norm, plot = TRUE)
-# mds_data <- data.frame(x=mds_data$x,y=mds_data$y,sampleanno[names(mds_data$x),])
-```
-
 ALL CL NORMED LIPIDS
 ```{r}
 batch <- sampleanno$subject
@@ -208,15 +192,6 @@ mds_data <- plotMDS(removedbatch, plot = TRUE)
 mds_data <- data.frame(x=mds_data$x,y=mds_data$y,sampleanno[names(mds_data$x),])
 p <- ggplot(mds_data,aes(x=x,y=y)) + geom_point(aes(color = trainingvolume), size=3)
 p
-
-# ggsave(
-#   "lipid_mds.pdf",
-#   p,
-#   width = 10,
-#   height = 9,
-#   dpi = 300,
-#   useDingbats=FALSE
-# )
 ```
 
 ```{r}
@@ -228,7 +203,6 @@ Normalisation
 ```{r}
 #normalise the data - take the mean of the log 
 clnorm_logsp <- log2(imputedsp)
-#clnorm_logsp2 <-  normalizeBetweenArrays(clnorm_logsp, method = "cyclicloess")
 ```
 
 zscore check
@@ -263,9 +237,7 @@ zgroupmean <- zgroup_long %>%
   dplyr::group_by(Class,Group,trainingvolume) %>%
    summarise(mean = mean(intensity), n = n())
 
-#pdf("profileplot_alllipsclasses1.pdf", height = 15, width = 18)
 ggplot(data = zgroupmean, aes( x =trainingvolume, y = mean, group = Class, color = Group)) + geom_smooth() + facet_wrap(Class ~ .) + theme_bw() + theme(text = element_text(size=20))
-#dev.off()
 ```
 
 cardiolipin profile plot normalised, all CLs 
@@ -275,10 +247,7 @@ CLprofileplot_all <- zgroup_long %>% filter(Class == "CL")
 
 CLprofileplot_mean <- CLprofileplot_all %>% group_by(Species, trainingvolume) %>% dplyr::mutate(Mean = mean(intensity, na.rm=TRUE)) 
 
-#pdf("profileplot_CLnormedmeanall_20210112.pdf", height = 6, width = 7)
 ggplot(data = CLprofileplot_mean, aes( x = trainingvolume, y = Mean, group = Species)) + geom_smooth() + theme_bw() + theme(text = element_text(size=20))
-#dev.off()
-
 ```
 
 Differential Expression analysis 
@@ -327,60 +296,6 @@ lipidanno <- HeatmapAnnotation(lipid=annot_DE$Group, which="row", annotation_wid
 col = colorRamp2(c(-1.5, 0, 1.5), c("#272775", "white", "#B74E25"))
 
 dendrow <- annot_DE[c(5:7)] %>% dist(method = "euclidean") %>% hclust(method = "complete") %>% as.dendrogram %>% color_branches(k = 6)
-#dendcol <- t(annot_DE[c(5:7)]) %>% dist(method = "euclidean") %>% hclust(method = "average") %>% as.dendrogram %>% color_branches( k = 3)
 
-#pdf("HM_lipidssp_CLnormed_202010_NAMED.pdf", height = 25, width = 8)
 Heatmap(as.matrix(annot_DE[c(5:7)]), cluster_rows = dendrow, cluster_columns = FALSE,right_annotation = lipidanno,  col = col, rect_gp = gpar(col = "slategray", lwd = 0.1))
-#dev.off()
 ```
-
-normalisation to CS prot
-```{r normalisation to CS prot}
-#take unnormalised lipid sp data (logged)
-lipidnormalised <- t(lipid_logCL)
-
-#upload CSprot data - it has been logged already
-CSnorm <- read.table("data/CSprotact.csv", sep = ',', header = TRUE, check.names = FALSE, row.names = c(1))
-
-#add CS prot data to imputed dataframe that has been logged                            
-CSnorm <- as.matrix(CSnorm)
-
-#normalise by removing from data
-lograw_sweep <- sweep(lipidnormalised,2,CSnorm, "-")
-
-
-lipidnames <- rownames(lipidnormalised)
-lipidnames <- as.character(lipidnames)
-lograw_sweep <- cbind(lograw_sweep, lipidnames)
-```
-
-zscore
-```{r}
-lograw_sweep <- as_tibble(lograw_sweep)
-longCS <- lograw_sweep %>% gather("sample","concentration", -lipidnames)
-longCS <- longCS %>% separate(sample, c("subject", "trainingvolume"))
-longCS$concentration <- as.numeric(longCS$concentration)
-CS_zscore <- longCS %>% group_by(subject, lipidnames) %>% mutate(zscore_concentration = scale(concentration)) %>% dplyr::select(-c(4))
-CS_zscore <- as.data.frame(CS_zscore)
-CS_zscore$trainingvolume <- factor(CS_zscore$trainingvolume, c("1", "2","5","8"))
-
-ggplot(data = CS_zscore, aes(x = trainingvolume, y = zscore_concentration, group = subject, color = subject)) + geom_smooth(se = FALSE) 
-
-avgCL<- CS_zscore %>%
-  group_by(trainingvolume) %>%
-  summarise(mean = mean(zscore_concentration), n = n())
-ggplot(data = avgCL, aes(x = trainingvolume, y = mean, group = 1)) + geom_line()
-
-```
-
-```{r}
-#all lipids
-#pdf("profile_CSnormed_mitos.pdf", height = 25, width = 7)
-ggplot(CS_zscore, aes(x = (trainingvolume), y = zscore_concentration, group = lipidnames)) + geom_smooth()
-  
-#subset CLs
-CL_zscoresCS <- CS_zscore %>% filter(str_detect(lipidnames, "CL"))
-ggplot(CL_zscoresCS, aes(x = trainingvolume, y = zscore_concentration, group = lipidnames)) + geom_smooth(se=FALSE)
-```
-
-
